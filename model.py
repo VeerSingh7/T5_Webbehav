@@ -42,11 +42,6 @@ class T5(nn.Module):
     self.outputs = outputs
     return self.outputs
   
- 
-   
-   
-
-
   def compute_loss(self,logits_event,logits_page,**label_kwargs):
     loss_fn = nn.CrossEntropyLoss(ignore_index=self.tokenizer.vocab["<pad>"])
     total_loss = 0.0
@@ -63,6 +58,7 @@ class T5(nn.Module):
     self.outputs['loss'] = total_loss
     self.outputs.update(losses)
     return self.outputs
+    
   def train_model(self,
     csv_train,csv_val,                 
     num_epochs=5,
@@ -122,7 +118,7 @@ class T5(nn.Module):
         avg_loss = total_loss / batch_idx
         print(f"\nEpoch {epoch+1} avg loss: {avg_loss:.4f}")
 
-    print("\n✅ Training complete.")
+    print("Training complete.")
     
     self.eval()
     with torch.no_grad():
@@ -150,6 +146,64 @@ class T5(nn.Module):
         avg_val_loss = val_loss / val_batches
         print(f"📕 Epoch {epoch+1} Validation Loss: {avg_val_loss:.4f}")
     self.train()
+  def beam_search(self, sequence, beam_width=3, max_len=5, device="cpu"):
+    self.eval()
+    with torch.no_grad():
+        batch = self.prep_batch(sequence, self.tokenizer)
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+
+        # Start with decoder input: <pad>
+        start_token_id = self.tokenizer.vocab["<pad>"]
+        decoder_input_ids = torch.full((1, 1), start_token_id, dtype=torch.long).to(device)
+
+        # Beam = list of (log_prob, decoder_input_ids, page_seq, event_seq)
+        beam = [(0.0, decoder_input_ids, [], [])]
+
+        for step in range(max_len):
+            new_beam = []
+
+            for log_prob, dec_input, page_seq, event_seq in beam:
+                outputs = self(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    decoder_input_ids=dec_input
+                )
+
+                # Alternate prediction heads based on step
+                if step % 2 == 0:  # Page
+                    logits = outputs["logits_page"][:, -1, :]
+                else:             # Event
+                    logits = outputs["logits_event"][:, -1, :]
+
+                log_probs = torch.log_softmax(logits, dim=-1).squeeze(0)  # [vocab_size]
+
+                # Top-k tokens
+                topk_log_probs, topk_indices = torch.topk(log_probs, beam_width)
+
+                for i in range(beam_width):
+                    token_id = topk_indices[i].item()
+                    token_log_prob = topk_log_probs[i].item()
+
+                    new_input = torch.cat(
+                        [dec_input, torch.tensor([[token_id]], device=device)], dim=1
+                    )
+
+                    new_page_seq = page_seq + [token_id] if step % 2 == 0 else page_seq
+                    new_event_seq = event_seq + [token_id] if step % 2 == 1 else event_seq
+
+                    new_beam.append((log_prob + token_log_prob, new_input, new_page_seq, new_event_seq))
+
+            # Keep top-k beams
+            beam = sorted(new_beam, key=lambda x: x[0], reverse=True)[:beam_width]
+
+        # Final best sequence
+        best_log_prob, best_input, best_page_ids, best_event_ids = beam[0]
+        id2tok = self.tokenizer.idx2token
+        page_tokens = [id2tok[i] for i in best_page_ids if i != self.tokenizer.vocab["<pad>"]]
+        event_tokens = [id2tok[i] for i in best_event_ids if i != self.tokenizer.vocab["<pad>"]]
+
+        return page_tokens, event_tokens
 
 
 
