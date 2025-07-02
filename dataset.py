@@ -11,7 +11,7 @@ class SequenceDataset(IterableDataset):
         self.text_column = text_column
         self.chunksize = chunksize
 
-    def prep_batch(self,sequence, max_len=64):
+    def prep_batch(self,sequence, max_len=256):
 
         tokens = self.tokenizer.tokenize(sequence)
         token_ids = [self.tokenizer.vocab.get(tok, self.tokenizer.vocab["<unk>"]) for tok in tokens]
